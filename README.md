@@ -1,7 +1,7 @@
 # HAProxy stick table exporter
 
 This is a [prometheus](https://prometheus.io/) exporter for [HAProxy](https://www.haproxy.org/) stick table.
-Exporter will provide stick table metrics provided by `echo "show table" | socat stdio /tmp/sock1` and `cho "show table tablename" | socat stdio /tmp/sock1`.
+Exporter will provide stick table metrics provided by `echo "show table" | socat stdio /tmp/sock1` and `echo "show table tablename" | socat stdio /tmp/sock1`.
 Futher details provided by [HAProxy docs](https://cbonte.github.io/haproxy-dconv/1.8/management.html#9.3-show%20table).
 
 ## Install
@@ -21,6 +21,8 @@ $ python3 HAProxy-stick-tables-exporter.py -m 9366
 Name | Description | Default
 -----|-------------|--------
 -m --metrics-port | The port that the metrics exporter will listen on | 9366
+-c --config-file | The location of the config file | /etc/haproxy/haproxy.cfg
+-a --aggregate | To reduce cardinality of IP address aggregate them to a /24 | False
 
 
 ## Stats socket

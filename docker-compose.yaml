@@ -1,0 +1,24 @@
+version: '3.5'
+services:
+  haproxy:
+    image: haproxy:2.3.4
+    container_name: haproxy
+    restart: always
+    volumes:
+      - "./conf:/usr/local/etc/haproxy/:rw"
+    ports:
+      - "9001:9000" # Stats Port
+      - "9080:80" # TLS1.2 Port
+  exporter:
+    image: stick_table_exporter:rblx0.0.2
+    container_name: exporter
+    restart: unless-stopped
+    volumes:
+      - "./conf:/usr/local/etc/haproxy/:ro"
+    environment:
+      - HAPROXY_CONF=/usr/local/etc/haproxy/haproxy.cfg
+      - PROM_PORT=9366
+    depends_on:
+      - haproxy
+    ports:
+      - "9366:9366"

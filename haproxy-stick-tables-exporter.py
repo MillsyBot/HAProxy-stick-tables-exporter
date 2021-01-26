@@ -5,15 +5,26 @@ import sys
 import re
 import logging
 import argparse
+from IPy import IP
+import os.path
+import threading
+import signal
 from prometheus_client import start_http_server
 from prometheus_client.core import GaugeMetricFamily, CounterMetricFamily
 from prometheus_client.core import REGISTRY
 
 
 class haproxyCollector(object):
-    def __init__(self, stats_socket):
-        self.stats_socket = stats_socket
-        self.ha_stats = haproxy_Stats(self.stats_socket)
+    def __init__(self, args):
+        self.stats_socket = find_stats_socket(args.config_file)
+        self.config_file = args.config_file
+        self.aggregate = args.aggregate
+        self.ha_stats = haproxy_Stats(self.stats_socket, self.config_file)
+
+    def exit_gracefully(self, signum, frame):
+        print("Closing down...")
+        self.kill_now = True
+        sys.exit(1)
 
     def collect_metric(self, metric, metric_collector, stick_tables):
         for table in stick_tables:
@@ -30,26 +41,38 @@ class haproxyCollector(object):
                     for rate in rates:
                         for entry in stick_tables[table]:
                             metric_collector['family'].add_metric(
-                                [table, entry['key'], rate],
+                                [table, self.agg_key(entry['key']), rate],
                                 metric_collector['valuetype'](
                                     entry["%s(%s)" % (metric, rate)]
-                                    )
                                 )
+                            )
                 elif metric in stick_tables[table][0].keys():
                     for entry in stick_tables[table]:
                         metric_collector['family'].add_metric(
-                            [table, entry['key']],
+                            [table, self.agg_key(entry['key'])],
                             metric_collector['valuetype'](
                                 entry[metric]
-                                )
                             )
+                        )
         return metric_collector['family']
+
+    def agg_key(self, key_value):
+        if not self.aggregate:
+            return key_value
+        try:
+            ip = IP(key_value)
+            if ip.version == 6:
+                return key_value
+            else:
+                return key_value
+        except:
+            return key_value
 
     def collect(self):
         logging.debug("Collecting...")
         tables = self.ha_stats.get_ha_sticky_tables()
         if tables is not False:
-            logging.debug("got %d table(s): %s" % (len(tables), [table['table'] for table in tables] ))
+            logging.debug("got %d table(s): %s" % (len(tables), [table['table'] for table in tables]))
 
             yield self.collect_table_max_size(tables)
             yield self.collect_table_used_size(tables)
@@ -58,95 +81,95 @@ class haproxyCollector(object):
 
             metrics = {}
             metrics['server_id'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_server_id',
-                    'Haproxy stick table key server association id',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_server_id',
+                'Haproxy stick table key server association id',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['exp'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_expiry_milliseconds',
-                    'Haproxy stick table key expires in ms',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_expiry_milliseconds',
+                'Haproxy stick table key expires in ms',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['use'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_use',
-                    'HAProxy stick table key use',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_use',
+                'HAProxy stick table key use',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['gpc0'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_gpc0',
-                    'Haproxy stick table key general purpose counter 0',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_gpc0',
+                'Haproxy stick table key general purpose counter 0',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['gpc0_rate'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_gpc0_rate',
-                    'Haproxy stick table key general purpose counter 0 rate',
-                    labels=["table", "key", "period"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_gpc0_rate',
+                'Haproxy stick table key general purpose counter 0 rate',
+                labels=["table", "key", "period"]),
+                'valuetype': int}
             metrics['conn_cnt'] = {'family': CounterMetricFamily(
-                    'haproxy_stick_table_key_conn_total',
-                    'Haproxy stick table key connection counter',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_conn_total',
+                'Haproxy stick table key connection counter',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['conn_rate'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_conn_rate',
-                    'Haproxy stick table key connection rate',
-                    labels=["table", "key", "period"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_conn_rate',
+                'Haproxy stick table key connection rate',
+                labels=["table", "key", "period"]),
+                'valuetype': int}
             metrics['conn_cur'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_conn_cur',
-                    'Number of concurrent connection for a given key',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_conn_cur',
+                'Number of concurrent connection for a given key',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['sess_cnt'] = {'family': CounterMetricFamily(
-                    'haproxy_stick_table_key_sess_total',
-                    'Number of concurrent sessions for a given key',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_sess_total',
+                'Number of concurrent sessions for a given key',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['sess_rate'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_sess_rate',
-                    'Haproxy stick table key session rate',
-                    labels=["table", "key", "period"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_sess_rate',
+                'Haproxy stick table key session rate',
+                labels=["table", "key", "period"]),
+                'valuetype': int}
             metrics['http_req_cnt'] = {'family': CounterMetricFamily(
-                    'haproxy_stick_table_key_http_req_total',
-                    'Haproxy stick table key http request counter',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_http_req_total',
+                'Haproxy stick table key http request counter',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['http_req_rate'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_http_req_rate',
-                    'Haproxy stick table key http request rate',
-                    labels=["table", "key", "period"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_http_req_rate',
+                'Haproxy stick table key http request rate',
+                labels=["table", "key", "period"]),
+                'valuetype': int}
             metrics['http_err_cnt'] = {'family': CounterMetricFamily(
-                    'haproxy_stick_table_key_http_err_total',
-                    'Haproxy stick table key http error counter',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_http_err_total',
+                'Haproxy stick table key http error counter',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['http_err_rate'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_http_err_rate',
-                    'Haproxy stick table key http error rate',
-                    labels=["table", "key", "period"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_http_err_rate',
+                'Haproxy stick table key http error rate',
+                labels=["table", "key", "period"]),
+                'valuetype': int}
             metrics['bytes_in_cnt'] = {'family': CounterMetricFamily(
-                    'haproxy_stick_table_key_bytes_in_total',
-                    'Haproxy stick table key bytes in counter',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_bytes_in_total',
+                'Haproxy stick table key bytes in counter',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['bytes_in_rate'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_bytes_in_rate',
-                    'Haproxy stick table key bytes in rate',
-                    labels=["table", "key", "period"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_bytes_in_rate',
+                'Haproxy stick table key bytes in rate',
+                labels=["table", "key", "period"]),
+                'valuetype': int}
             metrics['bytes_out_cnt'] = {'family': CounterMetricFamily(
-                    'haproxy_stick_table_key_bytes_out_total',
-                    'Haproxy stick table key bytes out counter',
-                    labels=["table", "key"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_bytes_out_total',
+                'Haproxy stick table key bytes out counter',
+                labels=["table", "key"]),
+                'valuetype': int}
             metrics['bytes_out_rate'] = {'family': GaugeMetricFamily(
-                    'haproxy_stick_table_key_bytes_out_rate',
-                    'Haproxy stick table key bytes out rate',
-                    labels=["table", "key", "period"]),
-                    'valuetype': int}
+                'haproxy_stick_table_key_bytes_out_rate',
+                'Haproxy stick table key bytes out rate',
+                labels=["table", "key", "period"]),
+                'valuetype': int}
 
             for metric in metrics.items():
                 yield self.collect_metric(metric[0], metric[1], stick_tables)
@@ -202,8 +225,9 @@ class haproxyCollector(object):
 
 
 class haproxy_Stats(object):
-    def __init__(self, stats_socket):
+    def __init__(self, stats_socket, config_file):
         self.stats_socket = stats_socket
+        self.config_file = config_file
         self.conn_rate = {}
         self.ticks = time.time()
 
@@ -274,8 +298,8 @@ class haproxy_Stats(object):
             logging.error(
                 'Failed to connect to HAProxy Socket: {}'.format(
                     self.stats_socket
-                    )
                 )
+            )
             return False
 
     def get_ha_table_entries(self, tables):
@@ -292,8 +316,8 @@ class haproxy_Stats(object):
             for table in tables:
                 table_entries = []
                 raw_tables = self.connect_to_ha_socket(
-                        'show table {}'.format(table['table'])
-                        )
+                    'show table {}'.format(table['table'])
+                )
                 if raw_tables:
                     for line in raw_tables:
                         item_dict = {}
@@ -317,7 +341,7 @@ class haproxy_Stats(object):
             return self.conn_rate
         else:
             try:
-                with open('/etc/haproxy/haproxy.cfg') as f:
+                with open(self.config_file) as f:
                     config = f.read()
             except FileNotFoundError:
                 logging.fatal('Haproxy config not found')
@@ -332,7 +356,7 @@ class haproxy_Stats(object):
                     p = re.compile(
                         r'{\s+(src_)?(?P<type>\w+)\s+'
                         r'(?P<action>\w+)\s+(?P<value>\w+)'
-                        )
+                    )
                     m = p.search(line)
 
                     if m.group('type') is None:
@@ -352,9 +376,18 @@ class haproxy_Stats(object):
             return self.conn_rate
 
 
-def find_stats_socket():
+def find_stats_socket(config_file):
+    sleep_timer = 100
     try:
-        with open('/etc/haproxy/haproxy.cfg') as f:
+        while not os.path.exists(config_file) and sleep_timer > 0:
+            sleep_timer = sleep_timer - 1
+            logging.error("config file not present, sleeping {} more times".format(sleep_timer))
+            time.sleep(5)
+    except (KeyboardInterrupt, SystemExit):
+        logging.fatal('Kill signal received, closing down...')
+        sys.exit(1)
+    try:
+        with open(config_file) as f:
             config = f.read()
     except FileNotFoundError:
         logging.fatal('Haproxy config not found')
@@ -366,30 +399,46 @@ def find_stats_socket():
         return None
 
 
+def exit_gracefully(signum, frame):
+    logging.fatal('Kill signal received, closing down...')
+    sys.exit(1)
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, exit_gracefully)
+    signal.signal(signal.SIGTERM, exit_gracefully)
 
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
     logging.basicConfig(level=logging.DEBUG, format=log_format)
     parser = argparse.ArgumentParser(
-            description="HAProxy stick table exporter"
-        )
+        description="HAProxy stick table exporter"
+    )
     parser.add_argument('-m', '--metrics-port', type=int, default=9366)
+    parser.add_argument('-c', '--config-file', type=str, default="/etc/haproxy/haproxy.cfg")
+    parser.add_argument('-a', '--aggregate', type=bool, default=False)
     args = parser.parse_args()
 
     logging.info(
-        'Starting HAProxy sticky table exporter on port {}'.format(
-            args.metrics_port
-            )
+        'Starting HAProxy sticky table exporter on port {} config-file {}'.format(
+            args.metrics_port,
+            args.config_file
         )
-
-    stats_socket = find_stats_socket()
-    if stats_socket is None:
-        logging.fatal('Unable to find stats socket')
-        sys.exit(1)
-
-    REGISTRY.register(haproxyCollector(stats_socket))
-    start_http_server(args.metrics_port)
+    )
+    try:
+        stats_socket = find_stats_socket(args.config_file)
+        if stats_socket is None:
+            logging.fatal('Unable to find stats socket')
+            sys.exit(1)
+        sleep_timer = 100
+        while not os.path.exists(stats_socket) and sleep_timer > 0:
+            sleep_timer = sleep_timer - 1
+            logging.error('Stats socket not present. Sleeping')
+            time.sleep(1)
+        REGISTRY.register(haproxyCollector(args))
+        start_http_server(args.metrics_port)
+    except (KeyboardInterrupt, SystemExit):
+        sys.exit(0)
     while True:
         try:
             time.sleep(1)
